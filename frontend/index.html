@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Transport Assistant</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: Inter, system-ui, sans-serif; background: #0a0f1e; color: #e2e8f0; min-height: 100vh; }
+
+    /* ── top bar ── */
+    .topbar {
+      position: sticky; top: 0; z-index: 100;
+      background: rgba(10,15,30,.92); backdrop-filter: blur(12px);
+      border-bottom: 1px solid #1e293b;
+      padding: 10px 20px;
+      display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    }
+    .topbar h1 { font-size: 1rem; font-weight: 700; color: #f1f5f9; white-space: nowrap; }
+
+    /* canary pill */
+    #canary {
+      display: inline-flex; align-items: center; gap: 7px;
+      padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 500;
+      transition: background .4s, border-color .4s, color .4s;
+    }
+    #canary.idle  { background:#052e16; border:1px solid #16a34a; color:#4ade80; }
+    #canary.new   { background:#1e3a5f; border:1px solid #3b82f6; color:#93c5fd; }
+    #canary.error { background:#2d1010; border:1px solid #ef4444; color:#fca5a5; }
+    #canary.init  { background:#1e293b; border:1px solid #334155; color:#64748b; }
+    .dot { width:7px; height:7px; border-radius:50%; flex-shrink:0; transition:background .4s; }
+    .dot.green { background:#4ade80; box-shadow:0 0 5px #4ade80; }
+    .dot.blue  { background:#3b82f6; animation:blink 1s infinite; }
+    .dot.red   { background:#ef4444; }
+    .dot.grey  { background:#475569; }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+    /* ── agent toggle ── */
+    .agent-toggle {
+      display: inline-flex; align-items: center; gap: 9px;
+      padding: 6px 16px; border-radius: 24px; border: none; cursor: pointer;
+      font-size: 13px; font-weight: 700; letter-spacing: .01em;
+      transition: background .35s, box-shadow .35s, transform .15s;
+      position: relative; overflow: hidden;
+    }
+    .agent-toggle::after {
+      content:''; position:absolute; inset:0; border-radius:inherit;
+      background: rgba(255,255,255,.12); opacity:0;
+      transition: opacity .2s;
+    }
+    .agent-toggle:hover::after { opacity:1; }
+    .agent-toggle:active { transform: scale(.96); }
+    .agent-toggle.on  { background: linear-gradient(135deg,#16a34a,#15803d); box-shadow:0 0 16px rgba(22,163,74,.35); color:#fff; }
+    .agent-toggle.off { background: #1e293b; border: 1px solid #334155; color: #94a3b8; box-shadow: none; }
+    .toggle-icon { font-size:14px; transition: transform .35s; }
+    .agent-toggle.on  .toggle-icon { transform: rotate(0deg); }
+    .agent-toggle.off .toggle-icon { transform: rotate(180deg); }
+    .toggle-pulse {
+      width:8px; height:8px; border-radius:50%; background:#4ade80; flex-shrink:0;
+      box-shadow:0 0 6px #4ade80;
+      animation: pulse-ring 2s infinite;
+    }
+    .agent-toggle.off .toggle-pulse { background:#475569; box-shadow:none; animation:none; }
+    @keyframes pulse-ring {
+      0%  { box-shadow: 0 0 0 0 rgba(74,222,128,.5); }
+      70% { box-shadow: 0 0 0 6px rgba(74,222,128,0); }
+      100%{ box-shadow: 0 0 0 0 rgba(74,222,128,0); }
+    }
+
+    .topbar-right { display:flex; align-items:center; gap:10px; margin-left:auto; flex-wrap:wrap; }
+    .sync-btn {
+      padding:5px 12px; border-radius:8px; border:1px solid #334155;
+      background:#1e293b; color:#94a3b8; font-size:12px; font-weight:600;
+      cursor:pointer; transition:background .2s;
+    }
+    .sync-btn:hover { background:#334155; color:#e2e8f0; }
+    .topbar-note { font-size:11px; color:#475569; }
+
+    /* ── panels grid ── */
+    .panels {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+      gap: 14px;
+      padding: 16px 20px;
+    }
+
+    /* ── panel ── */
+    .panel {
+      background: #111827; border: 1px solid #1e293b; border-radius: 14px;
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    .panel-header {
+      padding: 12px 14px 10px;
+      display: flex; align-items: center; gap: 8px;
+      border-bottom: 1px solid #1e293b;
+    }
+    .panel-icon { font-size: 16px; }
+    .panel-title { font-size: 13px; font-weight: 700; color: #f1f5f9; flex: 1; }
+    .panel-count {
+      font-size: 11px; font-weight: 700; padding: 2px 8px;
+      border-radius: 10px; background: #1e293b; color: #64748b;
+    }
+    .panel-count.has-items { background: #1e3a5f; color: #93c5fd; }
+    .panel-body { padding: 10px; display: flex; flex-direction: column; gap: 8px; flex: 1; overflow-y: auto; max-height: 480px; }
+
+    /* ── message+response card ── */
+    .msg-card {
+      border: 1px solid #1e293b; border-radius: 10px; overflow: hidden;
+      animation: slide-in .25s ease;
+    }
+    @keyframes slide-in { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:translateY(0); } }
+
+    .msg-section { padding: 10px 12px; }
+    .msg-section.incoming { background: #0f172a; }
+    .msg-section.response { background: #0c1a14; border-top: 1px solid #1e293b; }
+
+    .msg-meta { display:flex; align-items:center; gap:6px; margin-bottom:6px; flex-wrap:wrap; }
+    .msg-type-badge {
+      font-size:10px; font-weight:800; padding:2px 7px; border-radius:8px;
+      text-transform:uppercase; letter-spacing:.04em;
+    }
+    .badge-transeu   { background:#1e3a5f; color:#93c5fd; }
+    .badge-email     { background:#3b1f6e; color:#c4b5fd; }
+    .badge-other     { background:#1e293b; color:#64748b; }
+    .badge-agent     { background:#0c1a14; color:#4ade80; border:1px solid #16a34a; }
+    .msg-sender { font-size:11px; color:#64748b; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:180px; }
+    .msg-time   { font-size:10px; color:#334155; margin-left:auto; }
+
+    .msg-text { font-size:13px; color:#cbd5e1; line-height:1.55; }
+    .msg-id   { font-size:10px; color:#1e293b; font-family:monospace; margin-top:4px; }
+
+    .response-label { font-size:10px; font-weight:700; color:#4ade80; margin-bottom:5px; text-transform:uppercase; letter-spacing:.05em; }
+    .response-text  { font-size:13px; color:#a7f3d0; line-height:1.55; }
+    .no-response    { font-size:12px; color:#334155; font-style:italic; }
+
+    .empty-panel { padding:24px 12px; text-align:center; color:#334155; font-size:13px; }
+
+    /* ── debug ── */
+    .debug { padding: 6px 20px 16px; font-size:11px; color:#334155; font-family:monospace; }
+  </style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>Transport Assistant</h1>
+
+  <button class="agent-toggle off" id="agentToggle" onclick="toggleAgent()">
+    <span class="toggle-pulse"></span>
+    <span class="toggle-text">Agent wyłączony</span>
+    <span class="toggle-icon">⏻</span>
+  </button>
+
+  <div id="canary" class="init">
+    <span class="dot grey"></span>
+    <span id="canaryText">Łączenie...</span>
+  </div>
+
+  <div class="topbar-right">
+    <button class="sync-btn" onclick="syncAll()">↻ Sync</button>
+    <span class="topbar-note">polling co 30s</span>
+  </div>
+</div>
+
+<div class="panels">
+  <div class="panel" id="panel-offer_received">
+    <div class="panel-header">
+      <span class="panel-icon">💰</span>
+      <span class="panel-title">Oferty do ładunków</span>
+      <span class="panel-count" id="count-offer_received">0</span>
+    </div>
+    <div class="panel-body" id="list-offer_received">
+      <div class="empty-panel">Brak ofert.</div>
+    </div>
+  </div>
+
+  <div class="panel" id="panel-order_created">
+    <div class="panel-header">
+      <span class="panel-icon">📋</span>
+      <span class="panel-title">Zlecenia</span>
+      <span class="panel-count" id="count-order_created">0</span>
+    </div>
+    <div class="panel-body" id="list-order_created">
+      <div class="empty-panel">Brak zleceń.</div>
+    </div>
+  </div>
+
+  <div class="panel" id="panel-loading_confirmed">
+    <div class="panel-header">
+      <span class="panel-icon">🚛</span>
+      <span class="panel-title">Załadunek</span>
+      <span class="panel-count" id="count-loading_confirmed">0</span>
+    </div>
+    <div class="panel-body" id="list-loading_confirmed">
+      <div class="empty-panel">Brak potwierdzeń załadunku.</div>
+    </div>
+  </div>
+
+  <div class="panel" id="panel-delivery_confirmed">
+    <div class="panel-header">
+      <span class="panel-icon">✅</span>
+      <span class="panel-title">Dostawy</span>
+      <span class="panel-count" id="count-delivery_confirmed">0</span>
+    </div>
+    <div class="panel-body" id="list-delivery_confirmed">
+      <div class="empty-panel">Brak potwierdzonych dostaw.</div>
+    </div>
+  </div>
+
+  <div class="panel" id="panel-new_freight">
+    <div class="panel-header">
+      <span class="panel-icon">📦</span>
+      <span class="panel-title">Giełda — nowe ładunki</span>
+      <span class="panel-count" id="count-new_freight">0</span>
+    </div>
+    <div class="panel-body" id="list-new_freight">
+      <div class="empty-panel">Brak nowych ładunków.</div>
+    </div>
+  </div>
+
+  <div class="panel" id="panel-other">
+    <div class="panel-header">
+      <span class="panel-icon">📨</span>
+      <span class="panel-title">Inne wiadomości</span>
+      <span class="panel-count" id="count-other">0</span>
+    </div>
+    <div class="panel-body" id="list-other">
+      <div class="empty-panel">Brak wiadomości.</div>
+    </div>
+  </div>
+</div>
+
+<div class="debug" id="debugOutput">Gotowe.</div>
+
+<script src="app.js?v=3"></script>
+</body>
+</html>

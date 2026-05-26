@@ -1,0 +1,37 @@
+# ── working docs ──────────────────────────────────────────────────────────────
+TASKS.md
+
+# ── Python ────────────────────────────────────────────────────────────────────
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# ── secrets / env ─────────────────────────────────────────────────────────────
+.env
+*.env
+backend/.env
+.env.local
+.env.*.local
+
+# ── detect-secrets baseline (contains hashed secret fingerprints, not values) ─
+# Keep .secrets.baseline in repo so CI can verify no NEW secrets added.
+# Uncomment the line below only if you never want it tracked:
+# .secrets.baseline
+
+# ── data files (may contain PII / message content) ───────────────────────────
+backend/data/messages.jsonl
+backend/data/responses.jsonl
+backend/data/poller_state.json
+backend/notes/
+
+# ── IDE / OS ──────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

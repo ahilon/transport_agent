@@ -1,0 +1,67 @@
+[tool.poetry]
+name = "transport-assistant"
+version = "0.1.0"
+description = "Mock backend and agents for a small transport company assistant"
+authors = ["Your Name <you@example.com>"]
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.10"
+fastapi = "^0.95.2"
+uvicorn = {extras = ["standard"], version = "^0.22.0"}
+pydantic = "^1.10.11"
+httpx = "^0.27.0"
+requests = "^2.31.0"
+python-dotenv = "^1.0.0"
+imap-tools = "^1.6.0"
+
+[tool.poetry.group.dev.dependencies]
+ruff = "^0.5.0"
+mypy = "^1.10.0"
+bandit = {extras = ["toml"], version = "^1.7.0"}
+detect-secrets = "^1.5.0"
+pre-commit = "^3.7.0"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+# ── ruff ──────────────────────────────────────────────────────────────────────
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "UP",       # pyupgrade
+    "B",        # bugbear
+    "S",        # bandit-style security (ruff's own)
+    "T20",      # print statements
+]
+ignore = [
+    "S101",     # assert – OK in tests
+    "S104",     # bind to 0.0.0.0 – intentional in dev
+    "B008",     # FastAPI Depends() calls in defaults
+]
+
+[tool.ruff.lint.per-file-ignores]
+"backend/mock_generator.py" = ["S311"]          # random is fine for mock data
+"backend/app/main.py" = ["E501"]                # embedded HTML templates
+"backend/agents/notes.py" = ["E501"]            # long regex with Polish chars
+
+# ── mypy ──────────────────────────────────────────────────────────────────────
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+warn_unused_ignores = true
+
+# ── bandit ────────────────────────────────────────────────────────────────────
+[tool.bandit]
+exclude_dirs = [".venv", "tests"]
+skips = [
+    "B104",   # bind to 0.0.0.0 – intentional in dev
+    "B311",   # random used only in mock_generator for fake test data, not crypto
+]
