@@ -41,6 +41,37 @@ def build_claude_prompt(message_text: str, sender: str = None, shipment_id: str 
     return message_text
 
 
+def call_claude_chat(messages: list[dict]) -> str:
+    """Multi-turn chat — messages is a list of {role, content} dicts."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_API_KEY")
+    if not api_key:
+        return "[ERROR] Brak ANTHROPIC_API_KEY w zmiennych środowiskowych."
+
+    model = os.environ.get("CLAUDE_MODEL", DEFAULT_MODEL)
+    payload = {
+        "model": model,
+        "max_tokens": 600,
+        "system": SYSTEM_PROMPT,
+        "messages": messages,
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": api_key,
+        "anthropic-version": ANTHROPIC_VERSION,
+    }
+    try:
+        with httpx.Client(timeout=30) as client:
+            resp = client.post(MESSAGES_API_URL, json=payload, headers=headers)
+            resp.raise_for_status()
+            return resp.json()["content"][0]["text"].strip()
+    except httpx.HTTPStatusError as exc:
+        return f"[ERROR] Anthropic {exc.response.status_code}: {exc.response.text[:300]}"
+    except httpx.RequestError as exc:
+        return f"[ERROR] RequestError: {exc}"
+    except Exception as exc:
+        return f"[ERROR] {exc}"
+
+
 def call_claude(user_text: str) -> str:
     api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_API_KEY")
     if not api_key:

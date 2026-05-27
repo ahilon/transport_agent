@@ -6,12 +6,18 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
 
+from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
+# Load backend/.env before anything reads os.environ
+load_dotenv(Path(__file__).parent.parent / ".env")
+
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+
+PAGE_SIZE: int = int(os.getenv("PAGE_SIZE", "30"))
 
 
 @asynccontextmanager
@@ -98,6 +104,7 @@ ORDERS: list[dict] = [
 ]
 
 AGENT_ENABLED = True
+SENT_RESPONSES: set[str] = set()
 
 # Kept for backward compatibility with existing frontend calls.
 OFFERS = [
@@ -169,6 +176,32 @@ def disable_agent():
     global AGENT_ENABLED
     AGENT_ENABLED = False
     return {"agent_enabled": AGENT_ENABLED}
+
+
+class ChatTurn(BaseModel):
+    role: str  # "user" | "assistant"
+    content: str
+
+
+class ChatRequest(BaseModel):
+    message: str
+    history: list[ChatTurn] = []
+
+
+@app.post("/chat")
+def chat_endpoint(req: ChatRequest):
+    from backend.llm.adapter import call_claude_chat
+
+    messages = [{"role": t.role, "content": t.content} for t in req.history]
+    messages.append({"role": "user", "content": req.message})
+
+    llm_mode = os.environ.get("LLM_MODE", "stub")
+    if llm_mode == "remote":
+        response = call_claude_chat(messages)
+    else:
+        response = "Rozumiem. Mogę pomóc z zapytaniami o transport, zlecenia i ładunki. (tryb testowy — ustaw LLM_MODE=remote dla prawdziwego AI)"
+
+    return {"response": response}
 
 
 class MessageIn(BaseModel):
@@ -247,9 +280,52 @@ def list_offers():
     return {"offers": OFFERS}
 
 
+# Maps panel id → matching event_type values
+_PANEL_TYPES: dict[str, list[str]] = {
+    "offer_received": ["freights.freight.offer_received"],
+    "order_created": ["freight_orders.order.created"],
+    "loading_confirmed": [
+        "freight_orders.order.loading_confirmed",
+        "freight_orders.order.unloading_confirmed",
+    ],
+    "delivery_confirmed": [
+        "freight_orders.order.delivery_was_confirmed",
+        "freight_orders.order.transports_was_finished",
+    ],
+    "new_freight": ["freights.freight.published"],
+}
+_ALL_KNOWN_TYPES: set[str] = {t for ts in _PANEL_TYPES.values() for t in ts}
+
+
+def _filter_by_panel(panel: str | None) -> list[dict]:
+    if panel is None:
+        return MESSAGES
+    if panel == "other":
+        return [
+            m
+            for m in MESSAGES
+            if not m.get("event_type") or m["event_type"] not in _ALL_KNOWN_TYPES
+        ]
+    types = _PANEL_TYPES.get(panel, [])
+    return [m for m in MESSAGES if m.get("event_type") in types]
+
+
+@app.get("/messages/totals")
+def messages_totals():
+    """Returns total message count per panel — used for per-panel Load More logic."""
+    result = {p: len(_filter_by_panel(p)) for p in [*_PANEL_TYPES, "other"]}
+    return result
+
+
 @app.get("/messages")
-def list_messages():
-    return {"messages": MESSAGES}
+def list_messages(limit: int = None, offset: int = 0, panel: str | None = None):
+    if limit is None:
+        limit = PAGE_SIZE
+    filtered = _filter_by_panel(panel)
+    total = len(filtered)
+    end = max(0, total - offset)
+    start = max(0, end - limit)
+    return {"messages": filtered[start:end], "total": total, "limit": limit, "offset": offset}
 
 
 @app.get("/messages/latest")
@@ -357,7 +433,20 @@ def webhook_process(payload: dict, background_tasks: BackgroundTasks):
 
 @app.get("/responses")
 def list_responses():
-    return {"responses": read_jsonl(RESPONSES_FILE)}
+    responses = read_jsonl(RESPONSES_FILE)
+    for r in responses:
+        r["sent"] = r.get("message_id", "") in SENT_RESPONSES
+    return {"responses": responses}
+
+
+@app.post("/responses/{message_id}/send")
+def send_response(message_id: str):
+    for item in read_jsonl(RESPONSES_FILE):
+        if item.get("message_id") == message_id:
+            SENT_RESPONSES.add(message_id)
+            logging.getLogger("main").info("Response sent for message %s", message_id)
+            return {"status": "sent", "message_id": message_id}
+    raise HTTPException(status_code=404, detail="Response not found")
 
 
 @app.get("/responses/latest")
@@ -424,6 +513,12 @@ def poll_status():
         "last_message_at": last_msg.get("datetime") if last_msg else None,
         "checked_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+@app.get("/config")
+def get_config():
+    """Frontend configuration — returns server-side constants like PAGE_SIZE."""
+    return {"page_size": PAGE_SIZE}
 
 
 @app.get("/health")

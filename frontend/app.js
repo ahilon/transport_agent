@@ -1,8 +1,19 @@
 const API_BASE = 'http://127.0.0.1:8000';
 const POLL_INTERVAL_MS = 30_000;
+let PAGE_SIZE = 30;  // overwritten from /config on startup
 
 let lastMessagesTotal = -1;
 let agentEnabled = false;
+
+// Local caches — plain objects for fast lookup
+let messageCache  = {};  // id → msg
+let responseCache = {};  // message_id → response
+
+// Per-panel server totals (how many of each type exist on the server)
+const panelTotals = {
+  offer_received: 0, order_created: 0, loading_confirmed: 0,
+  delivery_confirmed: 0, new_freight: 0, other: 0,
+};
 
 // Maps Trans.eu event_type → panel id
 const EVENT_PANEL = {
@@ -30,9 +41,7 @@ async function callApi(path, method = 'GET', body = null) {
   }
 }
 
-function debug(msg) {
-  document.getElementById('debugOutput').textContent = msg;
-}
+function debug(msg) { console.debug('[transport]', msg); }
 
 function fmt(iso) {
   if (!iso) return '';
@@ -41,12 +50,12 @@ function fmt(iso) {
 }
 
 function esc(s) {
-  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 // ── canary ────────────────────────────────────────────────────────────────────
 
-const DOT = { idle:'green', new:'blue', error:'red', init:'grey' };
+const DOT = { idle: 'green', new: 'blue', error: 'red', init: 'grey' };
 
 function setCanary(state, text) {
   const el = document.getElementById('canary');
@@ -112,19 +121,35 @@ async function toggleAgent() {
   if (r.ok) renderAgentToggle(r.body.agent_enabled);
 }
 
+// ── send response ─────────────────────────────────────────────────────────────
+
+async function sendResponse(messageId) {
+  const btn = document.querySelector(`[data-send="${messageId}"]`);
+  if (btn) { btn.disabled = true; btn.textContent = 'Wysyłanie…'; }
+
+  const r = await callApi(`/responses/${messageId}/send`, 'POST');
+  if (r.ok) {
+    if (responseCache[messageId]) responseCache[messageId].sent = true;
+    renderAll();
+  } else {
+    if (btn) { btn.disabled = false; btn.textContent = '▷ Wyślij odpowiedź'; }
+    debug(`Send failed: ${r.status}`);
+  }
+}
+
 // ── rendering ─────────────────────────────────────────────────────────────────
 
 function msgBadgeClass(msg) {
   const src = (msg.source || '').toLowerCase();
   if (src === 'email') return 'badge-email';
-  if (msg.event_type)  return 'badge-transeu';
+  if (msg.event_type) return 'badge-transeu';
   return 'badge-other';
 }
 
 function msgBadgeLabel(msg) {
   const src = (msg.source || '').toLowerCase();
   if (src === 'email') return 'E-mail';
-  if (msg.event_type)  return 'Trans.eu';
+  if (msg.event_type) return 'Trans.eu';
   return 'Ręczna';
 }
 
@@ -137,14 +162,23 @@ function buildCard(msg, response) {
   const badgeClass = msgBadgeClass(msg);
   const badgeLabel = msgBadgeLabel(msg);
 
-  const responseHtml = response
-    ? `<div class="msg-section response">
-         <div class="response-label">▷ Sugerowana odpowiedź agenta</div>
-         <div class="response-text">${esc(response.response)}</div>
-       </div>`
-    : `<div class="msg-section response">
-         <div class="no-response">Brak odpowiedzi — agent nie przetworzył.</div>
-       </div>`;
+  let responseHtml;
+  if (response) {
+    const sendControl = response.sent
+      ? `<span class="sent-label">✓ Wysłano</span>`
+      : `<button class="send-btn" data-send="${esc(msg.id)}" onclick="sendResponse('${esc(msg.id)}')">▷ Wyślij odpowiedź</button>`;
+    responseHtml = `
+      <div class="msg-section response">
+        <div class="response-label">▷ Sugerowana odpowiedź agenta</div>
+        <div class="response-text">${esc(response.response)}</div>
+        <div class="response-actions">${sendControl}</div>
+      </div>`;
+  } else {
+    responseHtml = `
+      <div class="msg-section response">
+        <div class="no-response">Brak odpowiedzi — agent nie przetworzył.</div>
+      </div>`;
+  }
 
   return `
     <div class="msg-card">
@@ -161,70 +195,179 @@ function buildCard(msg, response) {
     </div>`;
 }
 
+const EMPTY_TEXTS = {
+  offer_received:    'Brak ofert.',
+  order_created:     'Brak zleceń.',
+  loading_confirmed: 'Brak potwierdzeń załadunku.',
+  delivery_confirmed:'Brak potwierdzonych dostaw.',
+  new_freight:       'Brak nowych ładunków.',
+  other:             'Brak wiadomości.',
+};
+
+function renderAll() {
+  renderPanels(Object.values(messageCache), responseCache);
+}
+
 function renderPanels(messages, respMap) {
-  // group messages by panel
-  const groups = { offer_received:[], order_created:[], loading_confirmed:[], delivery_confirmed:[], new_freight:[], other:[] };
-  for (const msg of messages) {
-    const panel = panelFor(msg);
-    groups[panel].push(msg);
-  }
+  const groups = {
+    offer_received: [], order_created: [], loading_confirmed: [],
+    delivery_confirmed: [], new_freight: [], other: [],
+  };
+  for (const msg of messages) groups[panelFor(msg)].push(msg);
 
   for (const [panelId, msgs] of Object.entries(groups)) {
-    const listEl = document.getElementById(`list-${panelId}`);
+    const listEl  = document.getElementById(`list-${panelId}`);
     const countEl = document.getElementById(`count-${panelId}`);
     if (!listEl) continue;
 
-    countEl.textContent = msgs.length;
-    countEl.className = `panel-count ${msgs.length > 0 ? 'has-items' : ''}`;
+    const total = panelTotals[panelId] ?? msgs.length;
+    countEl.textContent = total || msgs.length;
+    countEl.className   = `panel-count ${msgs.length > 0 ? 'has-items' : ''}`;
 
+    let html = '';
     if (!msgs.length) {
-      const emptyTexts = {
-        offer_received: 'Brak ofert.',
-        order_created: 'Brak zleceń.',
-        loading_confirmed: 'Brak potwierdzeń załadunku.',
-        delivery_confirmed: 'Brak potwierdzonych dostaw.',
-        new_freight: 'Brak nowych ładunków.',
-        other: 'Brak wiadomości.',
-      };
-      listEl.innerHTML = `<div class="empty-panel">${emptyTexts[panelId] ?? 'Brak.'}</div>`;
-      continue;
+      html = `<div class="empty-panel">${EMPTY_TEXTS[panelId] ?? 'Brak.'}</div>`;
+    } else {
+      html = [...msgs]
+        .sort((a, b) => (b.datetime ?? '').localeCompare(a.datetime ?? ''))
+        .map(msg => buildCard(msg, respMap[msg.id]))
+        .join('');
     }
 
-    // newest first
-    listEl.innerHTML = [...msgs].reverse()
-      .map(msg => buildCard(msg, respMap[msg.id]))
-      .join('');
+    // Per-panel load more — only when there are more on the server
+    const remaining = total - msgs.length;
+    if (remaining > 0) {
+      html += `<button class="panel-load-more" id="plm-${panelId}"
+                       onclick="loadMore('${panelId}')">
+        ↓ Załaduj starsze (${remaining})
+      </button>`;
+    }
+
+    listEl.innerHTML = html;
   }
 }
 
 // ── sync ──────────────────────────────────────────────────────────────────────
 
 async function syncAll() {
-  const [msgR, respR] = await Promise.all([
-    callApi('/messages'),
+  const [msgR, respR, totalsR] = await Promise.all([
+    callApi(`/messages?limit=${PAGE_SIZE}`),
     callApi('/responses'),
+    callApi('/messages/totals'),
   ]);
-
   if (!msgR.ok || !respR.ok) {
     debug(`Sync błąd: messages=${msgR.status} responses=${respR.status}`);
     return;
   }
 
-  const messages = msgR.body.messages ?? [];
-  const responses = respR.body.responses ?? [];
+  for (const msg of msgR.body.messages ?? []) messageCache[msg.id] = msg;
 
-  // build response lookup by message_id
-  const respMap = {};
-  for (const r of responses) respMap[r.message_id] = r;
+  responseCache = {};
+  for (const r of respR.body.responses ?? []) responseCache[r.message_id] = r;
 
-  renderPanels(messages, respMap);
-  lastMessagesTotal = messages.length;
-  debug(`Sync: ${messages.length} wiad., ${responses.length} odp. · ${fmt(new Date().toISOString())}`);
+  if (totalsR.ok) {
+    for (const [panel, n] of Object.entries(totalsR.body)) {
+      if (panel in panelTotals) panelTotals[panel] = n;
+    }
+  }
+
+  const globalTotal = msgR.body.total ?? 0;
+  lastMessagesTotal = globalTotal;
+  renderAll();
+  debug(`Sync: ${Object.keys(messageCache).length} w cache, totals: ${JSON.stringify(panelTotals)}`);
+}
+
+async function loadMore(panelId) {
+  const btn = document.getElementById(`plm-${panelId}`);
+  if (btn) { btn.disabled = true; btn.textContent = 'Ładowanie…'; }
+
+  // offset = how many of this panel's messages are already in cache
+  const offset = Object.values(messageCache).filter(m => panelFor(m) === panelId).length;
+  const r = await callApi(`/messages?panel=${panelId}&limit=${PAGE_SIZE}&offset=${offset}`);
+  if (!r.ok) { renderAll(); return; }
+
+  for (const msg of r.body.messages ?? []) messageCache[msg.id] = msg;
+  // update total in case it changed
+  if (typeof r.body.total === 'number') panelTotals[panelId] = r.body.total;
+
+  renderAll();
+  debug(`LoadMore ${panelId}: +${r.body.messages?.length ?? 0}, cached=${offset + (r.body.messages?.length ?? 0)}`);
+}
+
+// ── chat widget ──────────────────────────────────────────────────────────────
+
+let chatOpen = false;
+let chatHistory = [];   // [{role, content}]
+
+function toggleChat() {
+  chatOpen = !chatOpen;
+  document.getElementById('chatPanel').classList.toggle('open', chatOpen);
+  document.getElementById('chatFab').classList.toggle('open', chatOpen);
+  if (chatOpen) {
+    document.getElementById('chatInput').focus();
+    scrollChatToBottom();
+  }
+}
+
+function scrollChatToBottom() {
+  const el = document.getElementById('chatMessages');
+  if (el) el.scrollTop = el.scrollHeight;
+}
+
+function appendBubble(role, text) {
+  const empty = document.getElementById('chatEmpty');
+  if (empty) empty.remove();
+
+  const div = document.createElement('div');
+  div.className = `chat-bubble ${role}`;
+  div.textContent = text;
+  document.getElementById('chatMessages').appendChild(div);
+  scrollChatToBottom();
+  return div;
+}
+
+async function sendChat() {
+  const input = document.getElementById('chatInput');
+  const sendBtn = document.getElementById('chatSend');
+  const text = input.value.trim();
+  if (!text) return;
+
+  input.value = '';
+  input.disabled = true;
+  sendBtn.disabled = true;
+
+  appendBubble('user', text);
+
+  // Typing indicator
+  const typingEl = document.createElement('div');
+  typingEl.className = 'chat-bubble typing';
+  typingEl.textContent = 'Asystent pisze…';
+  document.getElementById('chatMessages').appendChild(typingEl);
+  scrollChatToBottom();
+
+  const r = await callApi('/chat', 'POST', { message: text, history: chatHistory });
+
+  typingEl.remove();
+  input.disabled = false;
+  sendBtn.disabled = false;
+  input.focus();
+
+  if (r.ok) {
+    const reply = r.body.response ?? '';
+    chatHistory.push({ role: 'user', content: text });
+    chatHistory.push({ role: 'assistant', content: reply });
+    appendBubble('assistant', reply);
+  } else {
+    appendBubble('assistant', `Błąd połączenia (${r.status}). Sprawdź czy serwer działa.`);
+  }
 }
 
 // ── init ──────────────────────────────────────────────────────────────────────
 
-window.addEventListener('load', () => {
+window.addEventListener('load', async () => {
+  const cfgR = await callApi('/config');
+  if (cfgR.ok && cfgR.body.page_size) PAGE_SIZE = cfgR.body.page_size;
+
   refreshAgentStatus();
   pollCanary();
   setInterval(pollCanary, POLL_INTERVAL_MS);
