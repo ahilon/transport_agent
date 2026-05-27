@@ -143,7 +143,7 @@
     .empty-panel { padding:24px 12px; text-align:center; color:#334155; font-size:13px; }
 
     /* ── response actions ── */
-    .response-actions { margin-top: 8px; display: flex; align-items: center; gap: 8px; }
+    .response-actions { margin-top: 8px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .send-btn {
       padding: 4px 12px; border-radius: 6px; border: 1px solid #16a34a;
       background: #052e16; color: #4ade80; font-size: 12px; font-weight: 700;
@@ -151,7 +151,29 @@
     }
     .send-btn:hover:not(:disabled) { background: #14532d; color: #86efac; }
     .send-btn:disabled { opacity: .5; cursor: default; }
+    .edit-btn {
+      padding: 4px 10px; border-radius: 6px; border: 1px solid #334155;
+      background: transparent; color: #64748b; font-size: 12px; font-weight: 600;
+      cursor: pointer; transition: background .15s, color .15s;
+    }
+    .edit-btn:hover { background: #1e293b; color: #94a3b8; }
+    .cancel-btn {
+      padding: 4px 10px; border-radius: 6px; border: 1px solid #334155;
+      background: transparent; color: #64748b; font-size: 12px; font-weight: 600;
+      cursor: pointer; transition: background .15s, color .15s;
+    }
+    .cancel-btn:hover { background: #1e293b; color: #94a3b8; }
+    .response-textarea {
+      width: 100%; min-height: 80px; padding: 8px 10px; margin-bottom: 2px;
+      border-radius: 6px; border: 1px solid #2563eb;
+      background: #0f172a; color: #e2e8f0; font-size: 13px;
+      font-family: inherit; line-height: 1.55; resize: vertical; outline: none;
+    }
     .sent-label { font-size: 12px; font-weight: 700; color: #4ade80; }
+    .sent-edited-badge {
+      font-size: 10px; padding: 1px 6px; border-radius: 6px;
+      background: #1e3a5f; color: #93c5fd; font-weight: 600;
+    }
 
     /* ── chat widget ── */
     .chat-fab {
@@ -367,6 +389,6 @@
   </div>
 </div>
 
-<script src="app.js?v=4"></script>
+<script src="app.js?v=6"></script>
 </body>
 </html>

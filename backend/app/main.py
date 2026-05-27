@@ -104,7 +104,7 @@ ORDERS: list[dict] = [
 ]
 
 AGENT_ENABLED = True
-SENT_RESPONSES: set[str] = set()
+SENT_RESPONSES: dict[str, str] = {}  # message_id → sent text (original or edited)
 
 # Kept for backward compatibility with existing frontend calls.
 OFFERS = [
@@ -431,21 +431,30 @@ def webhook_process(payload: dict, background_tasks: BackgroundTasks):
     return {"status": "processed", "message_id": message["id"], "response": response}
 
 
+class SendRequest(BaseModel):
+    text: str | None = None  # if provided, overrides the agent's suggested text
+
+
 @app.get("/responses")
 def list_responses():
     responses = read_jsonl(RESPONSES_FILE)
     for r in responses:
-        r["sent"] = r.get("message_id", "") in SENT_RESPONSES
+        mid = r.get("message_id", "")
+        r["sent"] = mid in SENT_RESPONSES
+        r["sent_text"] = SENT_RESPONSES.get(mid)
     return {"responses": responses}
 
 
 @app.post("/responses/{message_id}/send")
-def send_response(message_id: str):
+def send_response(message_id: str, req: SendRequest | None = None):
     for item in read_jsonl(RESPONSES_FILE):
         if item.get("message_id") == message_id:
-            SENT_RESPONSES.add(message_id)
-            logging.getLogger("main").info("Response sent for message %s", message_id)
-            return {"status": "sent", "message_id": message_id}
+            sent_text = (req.text.strip() if req and req.text else None) or item.get("response", "")
+            SENT_RESPONSES[message_id] = sent_text
+            logging.getLogger("main").info(
+                "Response sent for message %s (edited=%s)", message_id, bool(req and req.text)
+            )
+            return {"status": "sent", "message_id": message_id, "sent_text": sent_text}
     raise HTTPException(status_code=404, detail="Response not found")
 
 

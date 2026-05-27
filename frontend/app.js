@@ -121,18 +121,58 @@ async function toggleAgent() {
   if (r.ok) renderAgentToggle(r.body.agent_enabled);
 }
 
-// ── send response ─────────────────────────────────────────────────────────────
+// ── edit / send response ──────────────────────────────────────────────────────
+
+const editingState = {};  // messageId → { text: string }
+const draftTexts   = {};  // messageId → saved-but-not-sent text
+
+function startEdit(messageId) {
+  const resp = responseCache[messageId];
+  const current = draftTexts[messageId] ?? (resp ? resp.response : '');
+  editingState[messageId] = { text: current };
+  renderAll();
+}
+
+function saveEdit(messageId) {
+  const ta = document.querySelector(`[data-edit-ta="${messageId}"]`);
+  if (ta) draftTexts[messageId] = ta.value;
+  delete editingState[messageId];
+  renderAll();
+}
+
+function cancelEdit(messageId) {
+  delete editingState[messageId];
+  renderAll();
+}
+
+function discardDraft(messageId) {
+  delete draftTexts[messageId];
+  renderAll();
+}
 
 async function sendResponse(messageId) {
+  // If in edit mode, read current textarea value
+  const editing = editingState[messageId];
+  const ta = document.querySelector(`[data-edit-ta="${messageId}"]`);
+  if (ta && editing) editing.text = ta.value;
+
   const btn = document.querySelector(`[data-send="${messageId}"]`);
   if (btn) { btn.disabled = true; btn.textContent = 'Wysyłanie…'; }
 
-  const r = await callApi(`/responses/${messageId}/send`, 'POST');
+  const textToSend = editing?.text ?? draftTexts[messageId] ?? null;
+  const body = textToSend ? { text: textToSend } : null;
+  const r = await callApi(`/responses/${messageId}/send`, 'POST', body);
+
   if (r.ok) {
-    if (responseCache[messageId]) responseCache[messageId].sent = true;
+    delete editingState[messageId];
+    delete draftTexts[messageId];
+    if (responseCache[messageId]) {
+      responseCache[messageId].sent = true;
+      responseCache[messageId].sent_text = r.body.sent_text ?? null;
+    }
     renderAll();
   } else {
-    if (btn) { btn.disabled = false; btn.textContent = '▷ Wyślij odpowiedź'; }
+    if (btn) { btn.disabled = false; btn.textContent = '▷ Wyślij'; }
     debug(`Send failed: ${r.status}`);
   }
 }
@@ -164,15 +204,44 @@ function buildCard(msg, response) {
 
   let responseHtml;
   if (response) {
-    const sendControl = response.sent
-      ? `<span class="sent-label">✓ Wysłano</span>`
-      : `<button class="send-btn" data-send="${esc(msg.id)}" onclick="sendResponse('${esc(msg.id)}')">▷ Wyślij odpowiedź</button>`;
-    responseHtml = `
-      <div class="msg-section response">
-        <div class="response-label">▷ Sugerowana odpowiedź agenta</div>
-        <div class="response-text">${esc(response.response)}</div>
-        <div class="response-actions">${sendControl}</div>
-      </div>`;
+    const editing = editingState[msg.id];
+    if (response.sent) {
+      const wasEdited = response.sent_text && response.sent_text !== response.response;
+      responseHtml = `
+        <div class="msg-section response">
+          <div class="response-label">▷ Wysłana odpowiedź</div>
+          <div class="response-text">${esc(response.sent_text ?? response.response)}</div>
+          <div class="response-actions">
+            <span class="sent-label">✓ Wysłano</span>
+            ${wasEdited ? '<span class="sent-edited-badge">edytowana</span>' : ''}
+          </div>
+        </div>`;
+    } else if (editing) {
+      responseHtml = `
+        <div class="msg-section response">
+          <div class="response-label">✏️ Edytujesz odpowiedź</div>
+          <textarea class="response-textarea" data-edit-ta="${esc(msg.id)}">${esc(editing.text)}</textarea>
+          <div class="response-actions">
+            <button class="send-btn" data-send="${esc(msg.id)}" onclick="sendResponse('${esc(msg.id)}')">▷ Wyślij</button>
+            <button class="edit-btn" onclick="saveEdit('${esc(msg.id)}')">💾 Zapisz</button>
+            <button class="cancel-btn" onclick="cancelEdit('${esc(msg.id)}')">Anuluj</button>
+          </div>
+        </div>`;
+    } else {
+      const hasDraft = !!draftTexts[msg.id];
+      const displayText = hasDraft ? draftTexts[msg.id] : response.response;
+      const label = hasDraft ? '✏️ Zapisana wersja robocza' : '▷ Sugerowana odpowiedź agenta';
+      responseHtml = `
+        <div class="msg-section response">
+          <div class="response-label">${label}</div>
+          <div class="response-text">${esc(displayText)}</div>
+          <div class="response-actions">
+            <button class="send-btn" data-send="${esc(msg.id)}" onclick="sendResponse('${esc(msg.id)}')">▷ Wyślij</button>
+            <button class="edit-btn" onclick="startEdit('${esc(msg.id)}')">✏️ Edytuj</button>
+            ${hasDraft ? `<button class="cancel-btn" onclick="discardDraft('${esc(msg.id)}')">↩ Przywróć oryginał</button>` : ''}
+          </div>
+        </div>`;
+    }
   } else {
     responseHtml = `
       <div class="msg-section response">
@@ -205,6 +274,11 @@ const EMPTY_TEXTS = {
 };
 
 function renderAll() {
+  // Preserve any open textarea values before re-render
+  for (const [msgId, state] of Object.entries(editingState)) {
+    const ta = document.querySelector(`[data-edit-ta="${msgId}"]`);
+    if (ta) state.text = ta.value;
+  }
   renderPanels(Object.values(messageCache), responseCache);
 }
 
